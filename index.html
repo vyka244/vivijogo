@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Carros atropelando - Jogo Competitivo</title>
+<style>
+  /* Reset */
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  body {
+    background: linear-gradient(135deg, #444, #222);
+    color: white;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    overflow: hidden;
+    user-select: none;
+    height: 100vh;
+    justify-content: center;
+  }
+  #game-container {
+    position: relative;
+    width: 800px;
+    height: 600px;
+    background: linear-gradient(90deg, #333 25%, #444 50%, #333 75%);
+    border: 3px solid #555;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  canvas {
+    background: linear-gradient(to bottom, #555, #222);
+    display: block;
+    margin: 0 auto;
+  }
+  #ui {
+    margin-top: 14px;
+    width: 800px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  #score, #crash-count {
+    font-size: 20px;
+    font-weight: 700;
+    text-shadow: 1px 1px 4px black;
+  }
+  #special-btn {
+    background: #f39c12;
+    border: none;
+    padding: 12px 20px;
+    font-size: 18px;
+    font-weight: 700;
+    border-radius: 8px;
+    color: #222;
+    cursor: pointer;
+    box-shadow: 0 0 15px #f39c12;
+    transition: all 0.3s ease;
+    user-select: none;
+  }
+  #special-btn:disabled {
+    background: #666;
+    color: #aaa;
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+  #info-text {
+    margin-top: 8px;
+    font-size: 14px;
+    font-style: italic;
+    color: #ccc;
+    width: 800px;
+    text-align: center;
+  }
+  #message-overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 800px;
+    height: 600px;
+    background: rgba(0,0,0,0.85);
+    color: #ffa726;
+    font-size: 48px;
+    font-weight: 900;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-direction: column;
+    z-index: 100;
+    border-radius: 12px;
+    user-select: none;
+    display: none;
+  }
+  #message-overlay button {
+    margin-top: 20px;
+    padding: 14px 28px;
+    font-size: 22px;
+    cursor: pointer;
+    border:none;
+    border-radius: 10px;
+    background: #fb8c00;
+    color: #222;
+    box-shadow: 0 0 20px #fb8c00;
+    transition: background 0.25s ease;
+  }
+  #message-overlay button:hover {
+    background: #ffa726;
+  }
+</style>
+</head>
+<body>
+  <div id="game-container" tabindex="0" aria-label="Jogo carros atropelando - Use setas para mover e clique no botão para ativar especial">
+    <canvas id="game" width="800" height="600"></canvas>
+    <div id="message-overlay" role="alert" aria-live="assertive" aria-atomic="true">
+      <div id="message-text"></div>
+      <button id="restart-btn">Jogar de novo</button>
+    </div>
+  </div>
+  <div id="ui">
+    <div id="score">Pessoas atropeladas: 0</div>
+    <div id="crash-count">Colisões: 0 / 5</div>
+    <button id="special-btn" title="Speed Boost (Especial)">Ativar Especial</button>
+  </div>
+  <div id="info-text">
+    Use as setas para movimentar o carro.<br/>
+    Atropele as pessoas para ganhar pontos!<br/>
+    Evite bater nas bordas! 5 colisões e o jogo acaba.<br/>
+    Use o Especial para um boost rápido.
+  </div>
+
+  <script>
+  (() => {
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const scoreDisplay = document.getElementById('score');
+    const crashDisplay = document.getElementById('crash-count');
+    const specialBtn = document.getElementById('special-btn');
+    const messageOverlay = document.getElementById('message-overlay');
+    const messageText = document.getElementById('message-text');
+    const restartBtn = document.getElementById('restart-btn');
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Game variables
+    let score = 0;
+    let keys = {};
+    const pedestrians = [];
+    const maxPedestrians = 12;
+
+    let crashes = 0;
+    const maxCrashes = 5;
+
+    // Win condition
+    const targetScore = 20;
+
+    // Player car properties
+    const car = {
+      x: width / 2,
+      y: height / 2,
+      angle: 0, // in radians, 0 is pointing up
+      velocity: 0,
+      radius: 18,
+      speedLimit: 4,
+      acceleration: 0.12,
+      friction: 0.07,
+      rotationSpeed: 0.06,
+      specialActive: false,
+      specialDuration: 5000, // ms
+      specialCooldown: 15000, // ms
+      specialReady: true,
+      speedMultiplier: 1
+    };
+
+    // Pedestrian class
+    class Pedestrian {
+      constructor() {
+        this.radius = 12;
+        this.x = Math.random() * (width - this.radius * 2) + this.radius;
+        this.y = Math.random() * (height - this.radius * 2) + this.radius;
+        this.speedX = (Math.random() - 0.5) * 0.8;
+        this.speedY = (Math.random() - 0.5) * 0.8;
+        this.alive = true;
+      }
+      move() {
+        if (!this.alive) return;
+        this.x += this.speedX;
+        this.y += this.speedY;
+        if (this.x < this.radius) {
+          this.x = this.radius;
+          this.speedX *= -1;
+          this.speedX += (Math.random() - 0.5)*0.2;
+        } else if (this.x > width - this.radius) {
+          this.x = width - this.radius;
+          this.speedX *= -1;
+          this.speedX += (Math.random() - 0.5)*0.2;
+        }
+
+        if (this.y < this.radius) {
+          this.y = this.radius;
+          this.speedY *= -1;
+          this.speedY += (Math.random() - 0.5)*0.2;
+        } else if (this.y > height - this.radius) {
+          this.y = height - this.radius;
+          this.speedY *= -1;
+          this.speedY += (Math.random() - 0.5)*0.2;
+        }
+
+        // Random slow down or change
+        if (Math.random() < 0.01) {
+          this.speedX = (Math.random() - 0.5) * 0.8;
+          this.speedY = (Math.random() - 0.5) * 0.8;
+        }
+      }
+      draw(ctx) {
+        if (!this.alive) return;
+        ctx.save();
+        ctx.fillStyle = '#d1c4e9'; // light purple pedestrian
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Head
+        ctx.beginPath();
+        ctx.arc(this.x, this.y - this.radius/1.5, this.radius/3, 0, Math.PI * 2);
+        ctx.fillStyle = '#c5cae9';
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    function drawCar(ctx, x, y, angle) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(angle);
+      ctx.fillStyle = car.specialActive ? '#ff9933' : '#1976d2'; // Orange if special else blue
+      ctx.strokeStyle = '#004080';
+      ctx.lineWidth = 2;
+
+      // Car body
+      ctx.beginPath();
+      ctx.moveTo(0, -20);
+      ctx.lineTo(14, 20);
+      ctx.lineTo(7, 16);
+      ctx.lineTo(-7, 16);
+      ctx.lineTo(-14, 20);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Windows
+      ctx.fillStyle = '#80d8ff';
+      ctx.beginPath();
+      ctx.moveTo(0, -14);
+      ctx.lineTo(8, 10);
+      ctx.lineTo(0, 9);
+      ctx.lineTo(-8, 10);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function updateCar() {
+      if (keys.ArrowLeft || keys.KeyA) {
+        car.angle -= car.rotationSpeed;
+      }
+      if (keys.ArrowRight || keys.KeyD) {
+        car.angle += car.rotationSpeed;
+      }
+      if (keys.ArrowUp || keys.KeyW) {
+        car.velocity += car.acceleration * car.speedMultiplier;
+      } else {
+        car.velocity -= car.friction;
+      }
+      if (keys.ArrowDown || keys.KeyS) {
+        car.velocity -= car.acceleration * car.speedMultiplier * 0.75;
+      }
+      if (car.velocity > car.speedLimit * car.speedMultiplier) {
+        car.velocity = car.speedLimit * car.speedMultiplier;
+      }
+      if (car.velocity < 0) car.velocity = 0;
+
+      // Move car
+      car.x += Math.sin(car.angle) * car.velocity;
+      car.y -= Math.cos(car.angle) * car.velocity;
+
+      // Check collisions with edges for "crashes"
+      let crashedThisFrame = false;
+      if (car.x < car.radius) {
+        car.x = car.radius;
+        car.velocity *= -0.4;
+        crashedThisFrame = true;
+      } else if (car.x > width - car.radius) {
+        car.x = width - car.radius;
+        car.velocity *= -0.4;
+        crashedThisFrame = true;
+      }
+      if (car.y < car.radius) {
+        car.y = car.radius;
+        car.velocity *= -0.4;
+        crashedThisFrame = true;
+      } else if (car.y > height - car.radius) {
+        car.y = height - car.radius;
+        car.velocity *= -0.4;
+        crashedThisFrame = true;
+      }
+
+      if (crashedThisFrame) {
+        crashes++;
+        crashDisplay.textContent = `Colisões: ${crashes} / ${maxCrashes}`;
+        if (crashes >= maxCrashes) {
+          endGame(false);
+        }
+      }
+
+      if (car.velocity < 0.1) car.velocity = 0;
+    }
+
+    function checkCollisions() {
+      pedestrians.forEach(p => {
+        if (!p.alive) return;
+        const dx = car.x - p.x;
+        const dy = car.y - p.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < car.radius + p.radius) {
+          p.alive = false;
+          score++;
+          updateScore();
+          if (score >= targetScore) {
+            endGame(true);
+          }
+        }
+      });
+    }
+
+    function activateSpecial() {
+      if (!car.specialReady || gameEnded) return;
+      car.specialReady = false;
+      car.specialActive = true;
+      car.speedMultiplier = 2;
+      specialBtn.disabled = true;
+      specialBtn.textContent = 'Especial Ativo!';
+      setTimeout(() => {
+        car.specialActive = false;
+        car.speedMultiplier = 1;
+        let cooldown = car.specialCooldown / 1000;
+        specialBtn.textContent = `Recarga: ${cooldown.toFixed(0)}s`;
+        let interval = setInterval(() => {
+          cooldown--;
+          if (cooldown <= 0) {
+            specialBtn.textContent = 'Ativar Especial';
+            specialBtn.disabled = false;
+            car.specialReady = true;
+            clearInterval(interval);
+          } else {
+            specialBtn.textContent = `Recarga: ${cooldown.toFixed(0)}s`;
+          }
+        }, 1000);
+      }, car.specialDuration);
+    }
+
+    specialBtn.addEventListener('click', activateSpecial);
+
+    function draw() {
+      ctx.clearRect(0, 0, width, height);
+      pedestrians.forEach(p => p.draw(ctx));
+      drawCar(ctx, car.x, car.y, car.angle);
+    }
+
+    function update() {
+      updateCar();
+      pedestrians.forEach(p => p.move());
+      checkCollisions();
+      for (let i = pedestrians.length - 1; i >= 0; i--) {
+        if (!pedestrians[i].alive) pedestrians.splice(i, 1);
+      }
+      while (pedestrians.length < maxPedestrians) {
+        pedestrians.push(new Pedestrian());
+      }
+    }
+
+    function updateScore() {
+      scoreDisplay.textContent = `Pessoas atropeladas: ${score}`;
+    }
+
+    let gameEnded = false;
+    function endGame(won) {
+      gameEnded = true;
+      messageOverlay.style.display = 'flex';
+      messageText.textContent = won ? 'Vitória! 🎉' : 'Game Over 😞';
+      specialBtn.disabled = true;
+    }
+    function resetGame() {
+      score = 0;
+      crashes = 0;
+      gameEnded = false;
+      specialBtn.disabled = false;
+      car.specialReady = true;
+      car.specialActive = false;
+      car.speedMultiplier = 1;
+      car.x = width / 2;
+      car.y = height / 2;
+      car.angle = 0;
+      car.velocity = 0;
+      pedestrians.length = 0;
+      for (let i = 0; i < maxPedestrians; i++) {
+        pedestrians.push(new Pedestrian());
+      }
+      updateScore();
+      crashDisplay.textContent = `Colisões: ${crashes} / ${maxCrashes}`;
+      messageOverlay.style.display = 'none';
+      keys = {};
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Keyboard handlers
+    window.addEventListener('keydown', e => {
+      if (gameEnded) return;
+      keys[e.code] = true;
+      if(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].indexOf(e.code) > -1) {
+        e.preventDefault();
+      }
+    });
+    window.addEventListener('keyup', e => {
+      if (gameEnded) return;
+      keys[e.code] = false;
+    });
+
+    restartBtn.addEventListener('click', resetGame);
+
+    function gameLoop() {
+      if (gameEnded) return;
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Init
+    function init() {
+      for (let i = 0; i < maxPedestrians; i++) {
+        pedestrians.push(new Pedestrian());
+      }
+      updateScore();
+      crashDisplay.textContent = `Colisões: ${crashes} / ${maxCrashes}`;
+      requestAnimationFrame(gameLoop);
+    }
+    init();
+  })();
+  </script>
+</body>
+</html>
